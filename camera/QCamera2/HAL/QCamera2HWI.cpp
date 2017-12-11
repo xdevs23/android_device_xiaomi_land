@@ -764,7 +764,6 @@ void QCamera2HardwareInterface::release_recording_frame(
             struct camera_device *device, const void *opaque)
 {
     ATRACE_CALL();
-    int32_t ret = NO_ERROR;
     QCamera2HardwareInterface *hw =
         reinterpret_cast<QCamera2HardwareInterface *>(device->priv);
     if (!hw) {
@@ -776,10 +775,9 @@ void QCamera2HardwareInterface::release_recording_frame(
         return;
     }
     LOGD("E camera id %d", hw->getCameraId());
-
     hw->lockAPI();
     qcamera_api_result_t apiResult;
-    ret = hw->processAPI(QCAMERA_SM_EVT_RELEASE_RECORIDNG_FRAME, (void *)opaque);
+    int32_t ret = hw->processAPI(QCAMERA_SM_EVT_RELEASE_RECORIDNG_FRAME, (void *)opaque);
     if (ret == NO_ERROR) {
         hw->waitAPIResult(QCAMERA_SM_EVT_RELEASE_RECORIDNG_FRAME, &apiResult);
     }
@@ -1671,8 +1669,7 @@ QCamera2HardwareInterface::QCamera2HardwareInterface(uint32_t cameraId)
       mMetadataMem(NULL),
       mCACDoneReceived(false),
       m_bNeedRestart(false),
-      mIgnoredPreviewCount(0),
-      mBootToMonoTimestampOffset(0)
+      mIgnoredPreviewCount(0)
 {
 #ifdef TARGET_TS_MAKEUP
     memset(&mFaceRect, -1, sizeof(mFaceRect));
@@ -1960,23 +1957,6 @@ int QCamera2HardwareInterface::openCamera()
         }
         pthread_mutex_unlock(&gCamLock);
     }
-
-    // Setprop to decide the time source (whether boottime or monotonic).
-    // By default, use monotonic time.
-    property_get("persist.camera.time.monotonic", value, "1");
-    mBootToMonoTimestampOffset = 0;
-    if (atoi(value) == 1) {
-        // if monotonic is set, then need to use time in monotonic.
-        // So, Measure the clock offset between BOOTTIME and MONOTONIC
-        // The clock domain source for ISP is BOOTTIME and
-        // for display is MONOTONIC
-        // The below offset is used to convert from clock domain of other subsystem
-        // (hardware composer) to that of camera. Assumption is that this
-        // offset won't change during the life cycle of the camera device. In other
-        // words, camera device shouldn't be open during CPU suspend.
-        mBootToMonoTimestampOffset = getBootToMonoTimeOffset();
-    }
-    LOGH("mBootToMonoTimestampOffset = %lld", mBootToMonoTimestampOffset);
 
     return NO_ERROR;
 
@@ -2685,16 +2665,15 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
         {
             if (isNoDisplayMode()) {
                 mem = new QCameraStreamMemory(mGetMemory,
-                        mCallbackCookie,
                         bCachedMem,
                         (bPoolMem) ? &m_memoryPool : NULL,
                         stream_type);
             } else {
                 cam_dimension_t dim;
                 int minFPS, maxFPS;
-                QCameraGrallocMemory *grallocMemory = NULL;
+                QCameraGrallocMemory *grallocMemory =
+                    new QCameraGrallocMemory(mGetMemory);
 
-                grallocMemory = new QCameraGrallocMemory(mGetMemory, mCallbackCookie);
 
                 mParameters.getStreamDimension(stream_type, dim);
                 /* we are interested only in maxfps here */
@@ -2730,12 +2709,12 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
     case CAM_STREAM_TYPE_POSTVIEW:
         {
             if (isNoDisplayMode() || isPreviewRestartEnabled()) {
-                mem = new QCameraStreamMemory(mGetMemory, mCallbackCookie, bCachedMem);
+                mem = new QCameraStreamMemory(mGetMemory, bCachedMem);
             } else {
                 cam_dimension_t dim;
                 int minFPS, maxFPS;
                 QCameraGrallocMemory *grallocMemory =
-                        new QCameraGrallocMemory(mGetMemory, mCallbackCookie);
+                        new QCameraGrallocMemory(mGetMemory);
 
                 mParameters.getStreamDimension(stream_type, dim);
                 /* we are interested only in maxfps here */
@@ -2754,7 +2733,6 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
     case CAM_STREAM_TYPE_RAW:
     case CAM_STREAM_TYPE_OFFLINE_PROC:
         mem = new QCameraStreamMemory(mGetMemory,
-                mCallbackCookie,
                 bCachedMem,
                 (bPoolMem) ? &m_memoryPool : NULL,
                 stream_type);
@@ -2796,7 +2774,7 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
             QCameraVideoMemory *videoMemory = NULL;
             if (mParameters.getVideoBatchSize()) {
                 videoMemory = new QCameraVideoMemory(
-                        mGetMemory, mCallbackCookie, FALSE, QCAMERA_MEM_TYPE_BATCH);
+                        mGetMemory, FALSE, QCAMERA_MEM_TYPE_BATCH);
                 if (videoMemory == NULL) {
                     LOGE("Out of memory for video batching obj");
                     return NULL;
@@ -2815,7 +2793,7 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
                 }
             } else {
                 videoMemory =
-                        new QCameraVideoMemory(mGetMemory, mCallbackCookie, bCachedMem);
+                        new QCameraVideoMemory(mGetMemory, bCachedMem);
                 if (videoMemory == NULL) {
                     LOGE("Out of memory for video obj");
                     return NULL;
@@ -2834,7 +2812,6 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamBuf(
         break;
     case CAM_STREAM_TYPE_CALLBACK:
         mem = new QCameraStreamMemory(mGetMemory,
-                mCallbackCookie,
                 bCachedMem,
                 (bPoolMem) ? &m_memoryPool : NULL,
                 stream_type);
@@ -3138,7 +3115,7 @@ QCameraMemory *QCamera2HardwareInterface::allocateStreamUserBuf(
     switch (streamInfo->stream_type) {
     case CAM_STREAM_TYPE_VIDEO: {
         QCameraVideoMemory *video_mem = new QCameraVideoMemory(
-                mGetMemory, mCallbackCookie, FALSE, QCAMERA_MEM_TYPE_BATCH);
+                mGetMemory, FALSE, QCAMERA_MEM_TYPE_BATCH);
         if (video_mem == NULL) {
             LOGE("Out of memory for video obj");
             return NULL;
@@ -3709,9 +3686,8 @@ int QCamera2HardwareInterface::releaseRecordingFrame(const void * opaque)
 {
     int32_t rc = UNKNOWN_ERROR;
     QCameraVideoChannel *pChannel =
-            (QCameraVideoChannel *)m_channels[QCAMERA_CH_TYPE_VIDEO];
+        (QCameraVideoChannel *)m_channels[QCAMERA_CH_TYPE_VIDEO];
     LOGD("opaque data = %p",opaque);
-
     if(pChannel != NULL) {
         rc = pChannel->releaseFrame(opaque, mStoreMetaDataInFrame > 0);
     }
@@ -6333,7 +6309,6 @@ int32_t QCamera2HardwareInterface::processPrepSnapshotDoneEvent(
  *==========================================================================*/
 int32_t QCamera2HardwareInterface::processASDUpdate(cam_auto_scene_t scene)
 {
-    
     size_t data_len = sizeof(cam_auto_scene_t);
     size_t buffer_len = 1 *sizeof(int)       //meta type
                       + 1 *sizeof(int)       //data len
@@ -6342,8 +6317,6 @@ int32_t QCamera2HardwareInterface::processASDUpdate(cam_auto_scene_t scene)
                                              buffer_len,
                                              1,
                                              mCallbackCookie);
-
-#ifndef VANILLA_HAL
     if ( NULL == asdBuffer ) {
         LOGE("Not enough memory for histogram data");
         return NO_MEMORY;
@@ -6355,7 +6328,7 @@ int32_t QCamera2HardwareInterface::processASDUpdate(cam_auto_scene_t scene)
         return UNKNOWN_ERROR;
     }
 
-
+#ifndef VANILLA_HAL
     pASDData[0] = CAMERA_META_DATA_ASD;
     pASDData[1] = (int)data_len;
     pASDData[2] = scene;
@@ -10090,37 +10063,6 @@ bool QCamera2HardwareInterface::isLowPowerMode()
     bool isLowpower = mParameters.getRecordingHintValue() && enable
             && ((dim.width * dim.height) >= (2048 * 1080));
     return isLowpower;
-}
-
-/*===========================================================================
- * FUNCTION   : getBootToMonoTimeOffset
- *
- * DESCRIPTION: Calculate offset that is used to convert from
- *              clock domain of boot to monotonic
- *
- * PARAMETERS :
- *   None
- *
- * RETURN     : clock offset between boottime and monotonic time.
- *
- *==========================================================================*/
-nsecs_t QCamera2HardwareInterface::getBootToMonoTimeOffset()
-{
-    // try three times to get the clock offset, choose the one
-    // with the minimum gap in measurements.
-    const int tries = 3;
-    nsecs_t bestGap, measured;
-    for (int i = 0; i < tries; ++i) {
-        const nsecs_t tmono = systemTime(SYSTEM_TIME_MONOTONIC);
-        const nsecs_t tbase = systemTime(SYSTEM_TIME_BOOTTIME);
-        const nsecs_t tmono2 = systemTime(SYSTEM_TIME_MONOTONIC);
-        const nsecs_t gap = tmono2 - tmono;
-        if (i == 0 || gap < bestGap) {
-            bestGap = gap;
-            measured = tbase - ((tmono + tmono2) >> 1);
-        }
-    }
-    return measured;
 }
 
 }; // namespace qcamera

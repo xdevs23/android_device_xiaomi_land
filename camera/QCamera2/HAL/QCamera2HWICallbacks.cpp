@@ -37,6 +37,10 @@
 #include STAT_H
 #include <utils/Errors.h>
 
+
+// OpenMAX dependencies
+#include "QComOMXMetadata.h"
+
 // Camera dependencies
 #include "QCamera2HWI.h"
 #include "QCameraTrace.h"
@@ -736,9 +740,7 @@ void QCamera2HardwareInterface::synchronous_stream_cb_routine(
     }
 
     frameTime = nsecs_t(frame->ts.tv_sec) * 1000000000LL + frame->ts.tv_nsec;
-    // Convert Boottime from camera to Monotime for display if needed.
-    // Otherwise, mBootToMonoTimestampOffset value will be 0.
-    frameTime = frameTime - pme->mBootToMonoTimestampOffset;
+
     // Calculate the future presentation time stamp for displaying frames at regular interval
     mPreviewTimestamp = pme->mCameraDisplay.computePresentationTimeStamp(frameTime);
     stream->mStreamTimestamp = frameTime;
@@ -1371,12 +1373,12 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
                                                         void *userdata)
 {
     ATRACE_CALL();
-    QCameraVideoMemory *videoMemObj = NULL;
+    QCameraMemory *videoMemObj = NULL;
     camera_memory_t *video_mem = NULL;
     nsecs_t timeStamp = 0;
     bool triggerTCB = FALSE;
 
-    LOGD("[KPI Perf] : BEGIN");
+    LOGH("[KPI Perf] : BEGIN");
     QCamera2HardwareInterface *pme = (QCamera2HardwareInterface *)userdata;
     if (pme == NULL ||
         pme->mCameraHandle == NULL ||
@@ -1405,15 +1407,17 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
         if (pme->mParameters.getVideoBatchSize() == 0) {
             timeStamp = nsecs_t(frame->ts.tv_sec) * 1000000000LL
                     + frame->ts.tv_nsec;
+
+            LOGD("Video frame to encoder TimeStamp : %lld batch = 0",
+                    timeStamp);
             pme->dumpFrameToFile(stream, frame, QCAMERA_DUMP_FRM_VIDEO);
-            videoMemObj = (QCameraVideoMemory *)frame->mem_info;
+            videoMemObj = (QCameraMemory *)frame->mem_info;
             video_mem = NULL;
             if (NULL != videoMemObj) {
                 video_mem = videoMemObj->getMemory(frame->buf_idx,
                         (pme->mStoreMetaDataInFrame > 0)? true : false);
                 triggerTCB = TRUE;
-                LOGH("Video frame TimeStamp : %lld batch = 0 index = %d",
-                        timeStamp, frame->buf_idx);
+
             }
         } else {
             //Handle video batch callback
@@ -1434,8 +1438,8 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
                 }
             }
             video_mem = stream->mCurMetaMemory;
-            nh = videoMemObj->getNativeHandle(stream->mCurMetaIndex);
-            if (video_mem == NULL || nh == NULL) {
+
+            if (video_mem == NULL) {
                 LOGE("No Free metadata. Drop this frame");
                 stream->mCurBufIndex = -1;
                 stream->bufDone(frame->buf_idx);
@@ -1443,6 +1447,10 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
                 return;
             }
 
+
+            struct encoder_media_buffer_type * packet =
+                    (struct encoder_media_buffer_type *)video_mem->data;
+            nh = const_cast<native_handle_t *>(packet->meta_handle);
             int index = stream->mCurBufIndex;
             int fd_cnt = pme->mParameters.getVideoBatchSize();
             nsecs_t frame_ts = nsecs_t(frame->ts.tv_sec) * 1000000000LL
@@ -1473,9 +1481,8 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
             stream->mCurBufIndex++;
             if (stream->mCurBufIndex == fd_cnt) {
                 timeStamp = stream->mFirstTimeStamp;
-                LOGH("Video frame to encoder TimeStamp : %lld batch = %d Buffer idx = %d",
-                        timeStamp, fd_cnt,
-                        nh->data[nh->numFds + nh->numInts - VIDEO_METADATA_NUM_COMMON_INTS]);
+                LOGD("Video frame to encoder TimeStamp : %lld batch = %d",
+                    timeStamp, fd_cnt);
                 stream->mCurBufIndex = -1;
                 stream->mCurMetaIndex = -1;
                 stream->mCurMetaMemory = NULL;
@@ -1483,13 +1490,23 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
             }
         }
     } else {
-        videoMemObj = (QCameraVideoMemory *)frame->mem_info;
+
+        videoMemObj = (QCameraMemory *)frame->mem_info;
+
         video_mem = NULL;
         native_handle_t *nh = NULL;
         int fd_cnt = frame->user_buf.bufs_used;
         if (NULL != videoMemObj) {
             video_mem = videoMemObj->getMemory(frame->buf_idx, true);
-            nh = videoMemObj->getNativeHandle(frame->buf_idx);
+
+            if (video_mem != NULL) {
+                struct encoder_media_buffer_type * packet =
+                        (struct encoder_media_buffer_type *)video_mem->data;
+                nh = const_cast<native_handle_t *>(packet->meta_handle);
+            } else {
+                LOGE("video_mem NULL");
+            }
+
         } else {
             LOGE("videoMemObj NULL");
         }
@@ -1497,6 +1514,9 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
         if (nh != NULL) {
             timeStamp = nsecs_t(frame->ts.tv_sec) * 1000000000LL
                     + frame->ts.tv_nsec;
+
+            LOGD("Batch buffer TimeStamp : %lld FD = %d index = %d fd_cnt = %d",
+                    timeStamp, frame->fd, frame->buf_idx, fd_cnt);
 
             for (int i = 0; i < fd_cnt; i++) {
                 if (frame->user_buf.buf_idx[i] >= 0) {
@@ -1527,8 +1547,7 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
                 }
             }
             triggerTCB = TRUE;
-            LOGH("Batch buffer TimeStamp : %lld FD = %d index = %d fd_cnt = %d",
-                    timeStamp, frame->fd, frame->buf_idx, fd_cnt);
+
         } else {
             LOGE("No Video Meta Available. Return Buffer");
             stream->bufDone(super_frame->bufs[0]->buf_idx);
@@ -1543,11 +1562,6 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
             cbArg.cb_type = QCAMERA_DATA_TIMESTAMP_CALLBACK;
             cbArg.msg_type = CAMERA_MSG_VIDEO_FRAME;
             cbArg.data = video_mem;
-
-            // Convert Boottime from camera to Monotime for video if needed.
-            // Otherwise, mBootToMonoTimestampOffset value will be 0.
-            timeStamp = timeStamp - pme->mBootToMonoTimestampOffset;
-            LOGD("Final video buffer TimeStamp : %lld ", timeStamp);
             cbArg.timestamp = timeStamp;
             int32_t rc = pme->m_cbNotifier.notifyCallback(cbArg);
             if (rc != NO_ERROR) {
@@ -1558,7 +1572,8 @@ void QCamera2HardwareInterface::video_stream_cb_routine(mm_camera_super_buf_t *s
     }
 
     free(super_frame);
-    LOGD("[KPI Perf] : END");
+    LOGH("[KPI Perf] : END");
+
 }
 
 /*===========================================================================
