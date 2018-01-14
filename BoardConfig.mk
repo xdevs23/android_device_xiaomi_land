@@ -17,7 +17,7 @@
 DEVICE_PATH := device/xiaomi/land
 
 TARGET_SPECIFIC_HEADER_PATH := $(DEVICE_PATH)/include
-ALLOW_MISSING_DEPENDENCIES := true
+
 
 # Architecture
 TARGET_ARCH := arm64
@@ -214,7 +214,7 @@ TARGET_RECOVERY_FSTAB := $(DEVICE_PATH)/rootdir/recovery/fstab.qcom
 TARGET_RIL_VARIANT := caf
 
 # SELinux
-include device/qcom/sepolicy/sepolicy.mk
+#include device/qcom/sepolicy/sepolicy.mk
 #BOARD_SEPOLICY_DIRS += \
 #    $(DEVICE_PATH)/sepolicy
 

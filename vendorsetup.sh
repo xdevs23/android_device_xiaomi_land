@@ -1,1 +1,1 @@
-add_lunch_combo aoscp_land-userdebug
+add_lunch_combo XOS_land-userdebug
